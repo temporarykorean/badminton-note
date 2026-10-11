@@ -1,0 +1,34 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {emptyDB,importRecords,parseTXT,type Database} from './domain.ts';
+import {repository,STORAGE_KEYS,createBackup,parseBackup,validateDatabase,type EditorDraft} from './repository.ts';
+function withStorage(run:(data:Map<string,string>,setFailure:(key:string|null)=>void)=>void){
+  const data=new Map<string,string>();let fail:string|null=null;const previous=Object.getOwnPropertyDescriptor(globalThis,'localStorage');
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(key:string)=>data.get(key)??null,setItem:(key:string,value:string)=>{if(key===fail)throw new Error('QuotaExceededError');data.set(key,value)},removeItem:(key:string)=>data.delete(key)}});
+  try{run(data,key=>fail=key)}finally{if(previous)Object.defineProperty(globalThis,'localStorage',previous);else Reflect.deleteProperty(globalThis,'localStorage')}
+}
+function sample():Database {
+  const rows=parseTXT('===클럽 / 1회차===\n1회차 / 260508 / 수비\n앞타점에서 수비하기.\n===더콕 레슨 1회===\n더콕 레슨 1회 / 260723 / 드라이브\n팔로 밀지 않기.\n===대회 / 테스트대회===\n테스트대회 / 260620 / 예선 통과\n잘한 것\n서브\n못한 것\n팔로 밀지 않기.\n다음 대회에서 개선하고 싶은 것\n앞타점에서 수비하기.');
+  const db=importRecords(emptyDB(),rows).db;db.settings={...db.settings,hasStarted:true,lastBackupAt:'2026-10-11T00:00:00.000Z'};db.sessions.push({id:'session',date:'2026-10-11',total:2,correct:1,incorrect:1,wrongFeedbackIds:[db.feedback[0].id]});return db;
+}
+const draft:EditorDraft={kind:'lesson',editor:{lessonSource:'academy',lessonNumber:2,date:'2026-10-11',coachName:'코치',rawText:'아직 작성 중인 긴 수비 코칭'},analysis:true,categories:['수비'],feedbackText:'앞타점에서 수비하기.',updatedAt:'2026-10-11T10:00:00.000Z'};
+test('fresh device is empty without demo or automatic storage writes',()=>withStorage(data=>{assert.equal(repository.hasData(),false);assert.equal(repository.load().lessons.length,0);assert.equal(repository.load().demo,false);assert.equal(data.size,0)}));
+test('TXT import and all source types survive repeated loads without changing the original storage key',()=>withStorage(data=>{const db=sample();repository.save(db);assert.ok(data.has('kok-recall-v1'));assert.equal(STORAGE_KEYS.data,'kok-recall-v1');for(let i=0;i<3;i++)assert.deepEqual(repository.load(),db);assert.equal(repository.load().competitions?.length,1);assert.equal(repository.load().lessons.filter(l=>l.lessonSource==='academy').length,1)}));
+test('full backup round trip restores lessons, competitions, feedback, groups, cards, sessions, settings and draft after deletion',()=>withStorage(data=>{
+  const db=sample();repository.save(db);repository.saveDraft(draft);const backup=createBackup(repository.load(),repository.loadDraft());const parsed=parseBackup(JSON.stringify(backup));assert.equal(parsed.legacy,false);assert.equal(backup.app,'kokrecall');assert.equal(backup.version,1);assert.ok(Number.isFinite(Date.parse(backup.exportedAt)));data.clear();repository.replaceBackup(parsed.backup);assert.deepEqual(repository.load(),db);assert.deepEqual(repository.loadDraft(),draft);
+}));
+test('both lesson and competition drafts reload independently of saved records and delete explicitly',()=>withStorage(()=>{const db=sample();repository.save(db);repository.saveDraft(draft);assert.deepEqual(repository.loadDraft(),draft);const competition:EditorDraft={kind:'competition',editor:{name:'연습대회',date:'2026-10-11',result:'조1위',rawText:'못한 것\n팔로 밀어서 침',weaknesses:'팔로 밀어서 침'},updatedAt:new Date().toISOString()};repository.saveDraft(competition);assert.deepEqual(repository.loadDraft(),competition);repository.clearDraft();assert.equal(repository.loadDraft(),null);assert.deepEqual(repository.load(),db)}));
+test('invalid files and unsupported versions are rejected without changing local data',()=>withStorage(data=>{
+  const db=sample();repository.save(db);repository.saveDraft(draft);const original=[...data];
+  const valid=createBackup(db,draft);
+  for(const text of ['not json','{}',JSON.stringify({...valid,app:'other'}),JSON.stringify({...valid,version:2}),JSON.stringify({...valid,data:{}}),JSON.stringify({...valid,data:{...db,lessons:[null]}}),JSON.stringify({...valid,state:{draft:{kind:'lesson',editor:null}}})]){assert.throws(()=>parseBackup(text));assert.deepEqual([...data],original)}
+  assert.throws(()=>parseBackup(JSON.stringify({...valid,version:999})),/지원하지 않는 백업 버전/);assert.throws(()=>repository.replaceBackup({...valid,data:{} as Database}));assert.deepEqual([...data],original);
+}));
+test('broken references and malformed nested data cannot crash the app through a restore',()=>{
+  const db=sample();for(const bad of [{...db,sources:[null]},{...db,cards:[{...db.cards[0],feedbackId:'missing'}]},{...db,feedback:[{...db.feedback[0],lessonId:'missing'}]},{...db,competitions:[null]},{...db,sessions:[{...db.sessions[0],wrongFeedbackIds:null}]},{...db,lessons:[{...db.lessons[0],topics:[null]}]}])assert.equal(validateDatabase(bad),false);
+});
+test('old-format exported JSON is explicitly recognized and previewed as legacy',()=>{const db=sample();const legacy=parseBackup(JSON.stringify(db));assert.equal(legacy.legacy,true);assert.deepEqual(legacy.backup.data,db);assert.equal(legacy.backup.state.draft,null)});
+test('restoring replacement keeps a raw safety copy of the previous data and draft',()=>withStorage(()=>{const old=sample();repository.save(old);repository.saveDraft(draft);const fresh=emptyDB();fresh.settings={...fresh.settings,hasStarted:true};repository.replaceBackup(createBackup(fresh));assert.deepEqual(repository.load(),fresh);assert.equal(repository.loadDraft(),null);const previous=repository.readRestoreSafety()!;assert.deepEqual(JSON.parse(previous.data!),old);assert.deepEqual(JSON.parse(previous.draft!),draft)}));
+test('quota errors during restoration leave current data untouched and restore its original draft',()=>withStorage((data,setFailure)=>{const old=sample();repository.save(old);repository.saveDraft(draft);const raw=data.get(STORAGE_KEYS.data);setFailure(STORAGE_KEYS.data);assert.throws(()=>repository.replaceBackup(createBackup(emptyDB())));assert.equal(data.get(STORAGE_KEYS.data),raw);assert.deepEqual(repository.loadDraft(),draft);assert.ok(repository.readRestoreSafety()?.data)}));
+test('quota error before safety snapshot does not alter data or draft',()=>withStorage((data,setFailure)=>{repository.save(sample());repository.saveDraft(draft);const original=[...data];setFailure(STORAGE_KEYS.restoreSafety);assert.throws(()=>repository.replaceBackup(createBackup(emptyDB())));assert.deepEqual([...data],original)}));
+test('invalid existing stored JSON is retained and never silently replaced by defaults',()=>withStorage(data=>{data.set(STORAGE_KEYS.data,'{broken');assert.throws(()=>repository.load());assert.equal(data.get(STORAGE_KEYS.data),'{broken');assert.equal(data.size,1)}));

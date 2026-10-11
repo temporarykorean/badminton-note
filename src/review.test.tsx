@@ -1,0 +1,10 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {ReviewQuestion} from './ReviewQuestion';
+import {emptyDB,structure,addLesson} from './domain';
+const raw='수비\n준비할 때 라켓 헤드를 세우기';const analysis=structure(raw);const db=addLesson(emptyDB(),{lessonSource:'academy',lessonNumber:5,date:'2026-10-09',title:'드롭 · 수비 · 헤어핀',rawText:raw,coachName:'코치',categories:analysis.topics,feedback:analysis.feedback,good:'',feeling:'',focus:''});
+const props={card:db.cards[0],lesson:db.lessons[0],sourceName:'아카데미',numberLabel:'5',index:0,total:1,answer:'라켓을 세워 준비한다',setAnswer:()=>{},reveal:()=>{},grade:()=>{},openRecord:()=>{},alternatives:[]};
+test('question render uses the stored context; answer and original evidence stay hidden until reveal',()=>{const html=renderToStaticMarkup(<ReviewQuestion {...props} revealed={false}/>);assert.ok(html.includes(db.cards[0].question));assert.ok(!html.includes('라켓 헤드를 세우기'));assert.ok(!html.includes('이 기술에서 코치가'));assert.ok(html.includes('1 / 1'));assert.ok(html.includes('review-source'));assert.ok(html.includes('review-question'));assert.ok(html.includes('<textarea'))});
+test('answer render shows correction, original evidence, source and all three self-assessments',()=>{const html=renderToStaticMarkup(<ReviewQuestion {...props} revealed/>);for(const text of ['핵심 교정 내용','근거가 된 원문','준비할 때 라켓 헤드를 세우기','아카데미 5회차','기억했어요','일부만 기억했어요','다시 볼래요','표현이 달라도 괜찮아요','원본 기록 전체 보기'])assert.ok(html.includes(text),text);assert.ok(!html.includes('오답'));assert.ok(html.includes('self-grade'))});

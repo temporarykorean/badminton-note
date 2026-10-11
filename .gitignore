@@ -1,0 +1,18 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env*
+.DS_Store
+
+# Personal records and device backups are never deployment inputs.
+/backups/
+/personal-data/
+/imports/
+/artifacts/
+kokrecall-backup-*.json
+kokrecall-recovery-*.json
+콕리콜-*.json
+kokrecall-import-*.txt
+lesson-records*.txt
+콕리콜*.txt
+!.env.example
